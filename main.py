@@ -1,19 +1,64 @@
-"""A simple text-based JARVIS assistant using Ollama locally."""
+"""A voice and text JARVIS assistant using Ollama locally."""
 
 import ollama
+import pyttsx3
+import speech_recognition as sr
+
+
+MICROPHONE_DEVICE_INDEX = 30
+MODEL_NAME = "qwen2.5:3b-instruct"
+ASSISTANT_INSTRUCTIONS = (
+	"You are JARVIS, a friendly, calm, and helpful assistant. "
+	"Give clear beginner-friendly answers and keep responses concise."
+)
+
+
+def speak(text, speaker):
+	"""Speak a response while keeping the text output visible."""
+	speaker.say(text)
+	speaker.runAndWait()
+
+
+def listen_for_input(recognizer, microphone):
+	"""Capture one voice request from the configured microphone."""
+	try:
+		with microphone as source:
+			print("Listening...")
+			audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
+		print("Recognizing...")
+		return recognizer.recognize_google(audio, language="en-IN").strip()
+	except sr.WaitTimeoutError:
+		print("JARVIS: I did not hear anything.")
+	except sr.UnknownValueError:
+		print("JARVIS: I could not understand that.")
+	except sr.RequestError as error:
+		print(f"JARVIS: Speech recognition is unavailable: {error}")
+	return ""
 
 
 def main():
 	conversation_history = []
-	model_name = "qwen2.5:3b-instruct"
-	assistant_instructions = (
-		"You are JARVIS, a friendly, calm, and helpful assistant. "
-		"Give clear beginner-friendly answers and keep responses concise."
-	)
+	recognizer = sr.Recognizer()
+	speaker = pyttsx3.init()
+	microphone = sr.Microphone(device_index=MICROPHONE_DEVICE_INDEX)
+
+	print("Choose input mode: [V]oice or [T]ext")
+	mode = input("Mode: ").strip().lower()
+	voice_mode = mode.startswith("v")
+	if voice_mode:
+		with microphone as source:
+			print("Calibrating the Sony CH520 microphone...")
+			recognizer.adjust_for_ambient_noise(source, duration=1)
+		print("Voice mode ready. Say 'text mode' to switch modes.")
+	else:
+		print("Text mode ready. Type 'voice mode' to switch modes.")
 
 	# Keep asking for input until the user chooses to stop.
 	while True:
-		user_input = input("You: ").strip()
+		if voice_mode:
+			user_input = listen_for_input(recognizer, microphone)
+		else:
+			user_input = input("You: ").strip()
 
 		# Convert the command to lowercase so EXIT and Exit also work.
 		command = user_input.lower()
@@ -21,9 +66,23 @@ def main():
 		# Stop the program when the user enters an exit word.
 		if command in ("exit", "quit", "bye"):
 			print("JARVIS: Goodbye!")
+			speak("Goodbye!", speaker)
 			break
 
 		if not user_input:
+			continue
+
+		if command in ("voice mode", "switch to voice", "switch to voice mode"):
+			voice_mode = True
+			with microphone as source:
+				print("Calibrating the Sony CH520 microphone...")
+				recognizer.adjust_for_ambient_noise(source, duration=1)
+			print("JARVIS: Voice mode enabled.")
+			continue
+
+		if command in ("text mode", "switch to text", "switch to text mode"):
+			voice_mode = False
+			print("JARVIS: Text mode enabled.")
 			continue
 
 		# Save the user's message so later requests remember this conversation.
@@ -31,14 +90,15 @@ def main():
 
 		try:
 			response = ollama.chat(
-				model=model_name,
+				model=MODEL_NAME,
 				messages=[
-					{"role": "system", "content": assistant_instructions},
+					{"role": "system", "content": ASSISTANT_INSTRUCTIONS},
 					*conversation_history,
 				],
 			)
 			assistant_message = response.message.content
 			print(f"JARVIS: {assistant_message}")
+			speak(assistant_message, speaker)
 
 			# Save JARVIS's answer for the next request too.
 			conversation_history.append(
@@ -47,8 +107,8 @@ def main():
 		except ollama.ResponseError as error:
 			if error.status_code == 404:
 				print(
-					f"JARVIS: The Ollama model '{model_name}' is unavailable. "
-					f"Run: ollama pull {model_name}"
+					f"JARVIS: The Ollama model '{MODEL_NAME}' is unavailable. "
+					f"Run: ollama pull {MODEL_NAME}"
 				)
 			else:
 				print(f"JARVIS: Ollama returned an error: {error}")

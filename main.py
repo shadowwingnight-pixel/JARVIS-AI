@@ -4,6 +4,9 @@ import ollama
 import pyttsx3
 import speech_recognition as sr
 
+from command_router import CommandRouter
+from memory_store import MemoryStore
+
 
 MICROPHONE_DEVICE_INDEX = 30
 MODEL_NAME = "qwen2.5:3b-instruct"
@@ -36,8 +39,28 @@ def listen_for_input(recognizer, microphone):
 	return ""
 
 
+def build_messages(conversation_history, user_input, memory_store, web_context=None):
+	"""Build the Ollama messages with only memories relevant to this request."""
+	relevant_memories = memory_store.search_memories(user_input)
+	instructions = ASSISTANT_INSTRUCTIONS
+	if relevant_memories:
+		memory_text = "\n".join(
+			f"- {memory['content']}" for memory in relevant_memories
+		)
+		instructions += (
+			"\n\nRelevant memories the user explicitly asked you to save:\n"
+			f"{memory_text}\n"
+			"Use these only when they help answer the current request."
+		)
+	if web_context:
+		instructions += f"\n\n{web_context}"
+	return [{"role": "system", "content": instructions}, *conversation_history]
+
+
 def main():
 	conversation_history = []
+	memory_store = MemoryStore()
+	command_router = CommandRouter(memory_store)
 	recognizer = sr.Recognizer()
 	speaker = pyttsx3.init()
 	microphone = sr.Microphone(device_index=MICROPHONE_DEVICE_INDEX)
@@ -63,14 +86,20 @@ def main():
 		# Convert the command to lowercase so EXIT and Exit also work.
 		command = user_input.lower()
 
-		# Stop the program when the user enters an exit word.
-		if command in ("exit", "quit", "bye"):
-			print("JARVIS: Goodbye!")
-			speak("Goodbye!", speaker)
-			break
-
 		if not user_input:
 			continue
+
+		command_result = command_router.handle(user_input)
+		if command_result:
+			print(f"JARVIS: {command_result.message}")
+			speak(command_result.message, speaker)
+			if command_result.should_exit:
+				break
+			if not command_result.web_context:
+				continue
+			web_context = command_result.web_context
+		else:
+			web_context = None
 
 		if command in ("voice mode", "switch to voice", "switch to voice mode"):
 			voice_mode = True
@@ -89,12 +118,14 @@ def main():
 		conversation_history.append({"role": "user", "content": user_input})
 
 		try:
+			messages = build_messages(
+				conversation_history, user_input, memory_store, web_context
+			)
+			if memory_store.last_error:
+				print(f"JARVIS: {memory_store.last_error}")
 			response = ollama.chat(
 				model=MODEL_NAME,
-				messages=[
-					{"role": "system", "content": ASSISTANT_INSTRUCTIONS},
-					*conversation_history,
-				],
+				messages=messages,
 			)
 			assistant_message = response.message.content
 			print(f"JARVIS: {assistant_message}")
